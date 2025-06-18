@@ -4,7 +4,6 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 import time
 import pandas as pd
@@ -13,6 +12,7 @@ from datetime import datetime
 
 # --- Likes Parsing Helper Function ---
 def parse_likes(likes_text):
+    """Convert likes with suffix (K, M, B) to integer."""
     if "K" in likes_text:
         return int(float(likes_text.replace('K', '').strip()) * 1000)
     elif "M" in likes_text:
@@ -22,7 +22,7 @@ def parse_likes(likes_text):
     else:
         return int(likes_text.replace(',', '').strip())
 
-# --- Scroll Helper ---
+# --- Scroll helper function ---
 def scroll_down(driver, pause_time=2, max_scrolls=15):
     last_height = driver.execute_script("return document.documentElement.scrollHeight")
     for _ in range(max_scrolls):
@@ -35,8 +35,10 @@ def scroll_down(driver, pause_time=2, max_scrolls=15):
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="YouTube Scraper")
+
 st.markdown("""
     <style>
+    .css-10trblm { text-align: center; }
     h1 { animation: pop 1s ease-in-out; }
     @keyframes pop {
       0% { transform: scale(0.5); opacity: 0; }
@@ -57,6 +59,11 @@ st.markdown("""
     .stDownloadButton>button:hover {
         background-color: #45a049;
     }
+    .stDownloadButton { animation: fadeIn 2s; }
+    @keyframes fadeIn {
+      0% { opacity: 0; }
+      100% { opacity: 1; }
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -68,24 +75,25 @@ if st.button("Extract Info"):
         st.error("❌ Please enter a valid YouTube URL.")
     else:
         st.info("⏳ Scraping YouTube data...")
-
         comments = []
+
         try:
-            # Set up headless Chrome
+            # Setup Chrome for headless mode (Streamlit Cloud friendly)
             chrome_options = Options()
             chrome_options.add_argument("--headless")
             chrome_options.add_argument("--no-sandbox")
             chrome_options.add_argument("--disable-dev-shm-usage")
             chrome_options.add_argument("--window-size=1920x1080")
+            chrome_options.binary_location = "/usr/bin/chromium-browser"  # Required on Streamlit Cloud
 
-            driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+            driver = webdriver.Chrome(ChromeDriverManager().install(), options=chrome_options)
             driver.get(video_url)
-            time.sleep(10)
+            time.sleep(8)  # Wait for full page load
 
             # --- Title ---
             try:
                 title = WebDriverWait(driver, 15).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "h1.style-scope.ytd-watch-metadata"))
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "h1.title"))
                 ).text.strip()
             except:
                 title = "Title not found"
@@ -123,15 +131,14 @@ if st.button("Extract Info"):
             # --- Likes ---
             try:
                 likes_element = WebDriverWait(driver, 15).until(
-                    EC.presence_of_element_located(
-                        (By.XPATH, "//ytd-toggle-button-renderer[1]//button//span[@id='text']")
-                    )
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "yt-formatted-string#text.style-scope.ytd-toggle-button-renderer"))
                 )
                 likes_text = likes_element.text.strip()
                 likes = parse_likes(likes_text)
             except Exception as e:
                 likes = "Likes not found"
                 st.warning(f"⚠️ Error fetching likes: {e}")
+
             st.subheader("👍 Likes")
             st.write(f"{likes} Likes")
 
@@ -142,48 +149,43 @@ if st.button("Extract Info"):
                 )
                 driver.execute_script("arguments[0].click();", show_more)
                 time.sleep(1)
-            except Exception as e:
-                print(f"Show more button not found or already expanded: {e}")
+            except:
+                pass
 
             try:
-                description_element = WebDriverWait(driver, 10).until(
+                description = WebDriverWait(driver, 10).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, "#description yt-formatted-string"))
-                )
-                description = description_element.text.strip()
-            except Exception as e:
+                ).text.strip()
+            except:
                 description = "Description not found"
-                print(f"Description fetching error: {e}")
-
             st.subheader("📝 Description")
             st.write(description)
 
-            # --- Scroll and Get Comments ---
+            # --- Scroll and Extract Comments ---
             try:
-                comments_section = driver.find_element(By.CSS_SELECTOR, "#comments")
-                driver.execute_script("arguments[0].scrollIntoView();", comments_section)
+                driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight);")
+                time.sleep(3)
+                scroll_down(driver)
+                WebDriverWait(driver, 30).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "ytd-comment-thread-renderer"))
+                )
+                comment_elements = driver.find_elements(By.CSS_SELECTOR, "ytd-comment-thread-renderer")
+
+                for element in comment_elements:
+                    try:
+                        comment_text = element.find_element(By.CSS_SELECTOR, "#content-text").text
+                        comments.append(comment_text)
+                    except:
+                        continue
             except:
-                st.write("⚠️ Comments section not directly found. Scrolling full page.")
-
-            time.sleep(2)
-            scroll_down(driver)
-
-            WebDriverWait(driver, 30).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "ytd-comment-thread-renderer"))
-            )
-            comment_elements = driver.find_elements(By.CSS_SELECTOR, "ytd-comment-thread-renderer")
-
-            for element in comment_elements:
-                try:
-                    comment_text = element.find_element(By.CSS_SELECTOR, "#content-text").text
-                    comments.append(comment_text)
-                except:
-                    continue
+                st.warning("⚠️ Could not load or extract comments.")
 
             st.success(f"✅ Extracted {len(comments)} comments.")
             for i, comment in enumerate(comments, 1):
                 st.write(f"{i}. {comment}")
 
-            current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # --- Prepare and Download Files ---
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             video_info = {
                 "Title": title,
                 "Channel": channel,
@@ -191,27 +193,28 @@ if st.button("Extract Info"):
                 "Views": views,
                 "Likes": likes,
                 "Description": description,
-                "Scraped Date and Time": current_datetime
+                "Scraped DateTime": now
             }
 
-            # --- Export Files ---
             df_info = pd.DataFrame([video_info])
             df_comments = pd.DataFrame(comments, columns=["Comment"])
             combined_df = pd.concat([df_info, df_comments], axis=1)
 
-            st.subheader("💾 Download Files")
-            st.download_button("📊 Download CSV", combined_df.to_csv(index=False), file_name="video_info_and_comments.csv")
+            # CSV
+            csv_data = combined_df.to_csv(index=False)
+            st.download_button("📊 Download CSV", csv_data, file_name="youtube_data.csv")
 
-            full_data = {
+            # JSON
+            json_data = json.dumps({
                 "video_info": video_info,
                 "comments": comments
-            }
-            st.download_button("🗃️ Download JSON", json.dumps(full_data, indent=2), file_name="video_info_and_comments.json")
+            }, indent=2)
+            st.download_button("🗃️ Download JSON", json_data, file_name="youtube_data.json")
 
-            txt_output = f"Title: {title}\nChannel: {channel}\nSubscribers: {subs}\nViews: {views}\nLikes: {likes}\nDescription:\n{description}\n\nComments:\n"
-            for i, comment in enumerate(comments, 1):
-                txt_output += f"{i}. {comment}\n"
-            st.download_button("📄 Download TXT", txt_output, file_name="video_info_and_comments.txt")
+            # TXT
+            txt_output = f"Title: {title}\nChannel: {channel}\nSubscribers: {subs}\nViews: {views}\nLikes: {likes}\n\nDescription:\n{description}\n\nComments:\n"
+            txt_output += "\n".join(f"{i+1}. {c}" for i, c in enumerate(comments))
+            st.download_button("📄 Download TXT", txt_output, file_name="youtube_data.txt")
 
         except Exception as e:
             st.error("❌ An error occurred:")
