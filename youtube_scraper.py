@@ -2,13 +2,13 @@ import streamlit as st
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 import time
 import pandas as pd
 import json
-import re
 from datetime import datetime
 
 # --- Likes Parsing Helper Function ---
@@ -22,7 +22,7 @@ def parse_likes(likes_text):
     else:
         return int(likes_text.replace(',', '').strip())
 
-# --- Scroll Helper Function ---
+# --- Scroll Helper ---
 def scroll_down(driver, pause_time=2, max_scrolls=15):
     last_height = driver.execute_script("return document.documentElement.scrollHeight")
     for _ in range(max_scrolls):
@@ -35,20 +35,13 @@ def scroll_down(driver, pause_time=2, max_scrolls=15):
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="YouTube Scraper")
-
 st.markdown("""
     <style>
-    .css-10trblm { text-align: center; }
     h1 { animation: pop 1s ease-in-out; }
     @keyframes pop {
       0% { transform: scale(0.5); opacity: 0; }
       50% { transform: scale(1.1); opacity: 1; }
       100% { transform: scale(1); }
-    }
-    .stAlert {
-        border-radius: 12px;
-        padding: 20px;
-        font-size: 18px;
     }
     .stDownloadButton>button {
         background-color: #4CAF50;
@@ -64,11 +57,6 @@ st.markdown("""
     .stDownloadButton>button:hover {
         background-color: #45a049;
     }
-    .stDownloadButton { animation: fadeIn 2s; }
-    @keyframes fadeIn {
-      0% { opacity: 0; }
-      100% { opacity: 1; }
-    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -80,21 +68,19 @@ if st.button("Extract Info"):
         st.error("❌ Please enter a valid YouTube URL.")
     else:
         st.info("⏳ Scraping YouTube data...")
-        comments = []
 
+        comments = []
         try:
-            # Set up Selenium WebDriver
+            # Set up headless Chrome
             chrome_options = Options()
             chrome_options.add_argument("--headless")
             chrome_options.add_argument("--no-sandbox")
             chrome_options.add_argument("--disable-dev-shm-usage")
             chrome_options.add_argument("--window-size=1920x1080")
-            chrome_options.binary_location = "/usr/bin/chromium"
-            service = Service("/usr/lib/chromium-browser/chromedriver")
-            driver = webdriver.Chrome(service=service, options=chrome_options)
 
+            driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
             driver.get(video_url)
-            time.sleep(10)  # Wait for full page load
+            time.sleep(10)
 
             # --- Title ---
             try:
@@ -137,7 +123,9 @@ if st.button("Extract Info"):
             # --- Likes ---
             try:
                 likes_element = WebDriverWait(driver, 15).until(
-                    EC.presence_of_element_located((By.XPATH, "/html/body/ytd-app/div[1]/ytd-page-manager/ytd-watch-flexy/div[5]/div[1]/div/div[2]/ytd-watch-metadata/div/div[2]/div[2]/div/div/ytd-menu-renderer/div[1]/segmented-like-dislike-button-view-model/yt-smartimation/div/div/like-button-view-model/toggle-button-view-model/button-view-model/button/div[2]"))
+                    EC.presence_of_element_located(
+                        (By.XPATH, "//ytd-toggle-button-renderer[1]//button//span[@id='text']")
+                    )
                 )
                 likes_text = likes_element.text.strip()
                 likes = parse_likes(likes_text)
@@ -169,12 +157,13 @@ if st.button("Extract Info"):
             st.subheader("📝 Description")
             st.write(description)
 
-            # --- Scroll and Extract Comments ---
+            # --- Scroll and Get Comments ---
             try:
                 comments_section = driver.find_element(By.CSS_SELECTOR, "#comments")
                 driver.execute_script("arguments[0].scrollIntoView();", comments_section)
             except:
                 st.write("⚠️ Comments section not directly found. Scrolling full page.")
+
             time.sleep(2)
             scroll_down(driver)
 
@@ -194,10 +183,7 @@ if st.button("Extract Info"):
             for i, comment in enumerate(comments, 1):
                 st.write(f"{i}. {comment}")
 
-            # --- Current Date & Time ---
             current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-            # --- Save Outputs ---
             video_info = {
                 "Title": title,
                 "Channel": channel,
@@ -207,24 +193,21 @@ if st.button("Extract Info"):
                 "Description": description,
                 "Scraped Date and Time": current_datetime
             }
+
+            # --- Export Files ---
             df_info = pd.DataFrame([video_info])
             df_comments = pd.DataFrame(comments, columns=["Comment"])
             combined_df = pd.concat([df_info, df_comments], axis=1)
 
-            # --- CSV ---
             st.subheader("💾 Download Files")
-            csv_data = combined_df.to_csv(index=False)
-            st.download_button("📊 Download CSV", csv_data, file_name="video_info_and_comments.csv")
+            st.download_button("📊 Download CSV", combined_df.to_csv(index=False), file_name="video_info_and_comments.csv")
 
-            # --- JSON ---
             full_data = {
                 "video_info": video_info,
                 "comments": comments
             }
-            json_data = json.dumps(full_data, indent=2)
-            st.download_button("🗃️ Download JSON", json_data, file_name="video_info_and_comments.json")
+            st.download_button("🗃️ Download JSON", json.dumps(full_data, indent=2), file_name="video_info_and_comments.json")
 
-            # --- TXT ---
             txt_output = f"Title: {title}\nChannel: {channel}\nSubscribers: {subs}\nViews: {views}\nLikes: {likes}\nDescription:\n{description}\n\nComments:\n"
             for i, comment in enumerate(comments, 1):
                 txt_output += f"{i}. {comment}\n"
@@ -233,7 +216,6 @@ if st.button("Extract Info"):
         except Exception as e:
             st.error("❌ An error occurred:")
             st.error(str(e))
-
         finally:
             try:
                 driver.quit()
