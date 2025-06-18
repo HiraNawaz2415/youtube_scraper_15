@@ -2,6 +2,7 @@ import streamlit as st
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import time
@@ -12,7 +13,6 @@ from datetime import datetime
 
 # --- Likes Parsing Helper Function ---
 def parse_likes(likes_text):
-    """Convert likes with suffix (K, M, B) to integer."""
     if "K" in likes_text:
         return int(float(likes_text.replace('K', '').strip()) * 1000)
     elif "M" in likes_text:
@@ -22,7 +22,7 @@ def parse_likes(likes_text):
     else:
         return int(likes_text.replace(',', '').strip())
 
-# --- Scroll helper function ---
+# --- Scroll Helper Function ---
 def scroll_down(driver, pause_time=2, max_scrolls=15):
     last_height = driver.execute_script("return document.documentElement.scrollHeight")
     for _ in range(max_scrolls):
@@ -36,7 +36,6 @@ def scroll_down(driver, pause_time=2, max_scrolls=15):
 # --- Streamlit UI ---
 st.set_page_config(page_title="YouTube Scraper")
 
-# --- Custom CSS and Animations ---
 st.markdown("""
     <style>
     .css-10trblm { text-align: center; }
@@ -84,13 +83,16 @@ if st.button("Extract Info"):
         comments = []
 
         try:
+            # Set up Selenium WebDriver
             chrome_options = Options()
             chrome_options.add_argument("--headless")
-            chrome_options.add_argument("--disable-logging")
-            chrome_options.add_argument("--log-level=3")
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-dev-shm-usage")
             chrome_options.add_argument("--window-size=1920x1080")
+            chrome_options.binary_location = "/usr/bin/chromium"
+            service = Service("/usr/lib/chromium-browser/chromedriver")
+            driver = webdriver.Chrome(service=service, options=chrome_options)
 
-            driver = webdriver.Chrome(options=chrome_options)
             driver.get(video_url)
             time.sleep(10)  # Wait for full page load
 
@@ -135,16 +137,13 @@ if st.button("Extract Info"):
             # --- Likes ---
             try:
                 likes_element = WebDriverWait(driver, 15).until(
-                    EC.presence_of_element_located(
-                        (By.XPATH, "/html/body/ytd-app/div[1]/ytd-page-manager/ytd-watch-flexy/div[5]/div[1]/div/div[2]/ytd-watch-metadata/div/div[2]/div[2]/div/div/ytd-menu-renderer/div[1]/segmented-like-dislike-button-view-model/yt-smartimation/div/div/like-button-view-model/toggle-button-view-model/button-view-model/button/div[2]")
-                    )
+                    EC.presence_of_element_located((By.XPATH, "/html/body/ytd-app/div[1]/ytd-page-manager/ytd-watch-flexy/div[5]/div[1]/div/div[2]/ytd-watch-metadata/div/div[2]/div[2]/div/div/ytd-menu-renderer/div[1]/segmented-like-dislike-button-view-model/yt-smartimation/div/div/like-button-view-model/toggle-button-view-model/button-view-model/button/div[2]"))
                 )
                 likes_text = likes_element.text.strip()
                 likes = parse_likes(likes_text)
             except Exception as e:
                 likes = "Likes not found"
                 st.warning(f"⚠️ Error fetching likes: {e}")
-
             st.subheader("👍 Likes")
             st.write(f"{likes} Likes")
 
@@ -170,7 +169,7 @@ if st.button("Extract Info"):
             st.subheader("📝 Description")
             st.write(description)
 
-            # --- Scroll to Comments ---
+            # --- Scroll and Extract Comments ---
             try:
                 comments_section = driver.find_element(By.CSS_SELECTOR, "#comments")
                 driver.execute_script("arguments[0].scrollIntoView();", comments_section)
@@ -179,7 +178,6 @@ if st.button("Extract Info"):
             time.sleep(2)
             scroll_down(driver)
 
-            # --- Extract Comments ---
             WebDriverWait(driver, 30).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, "ytd-comment-thread-renderer"))
             )
@@ -196,10 +194,10 @@ if st.button("Extract Info"):
             for i, comment in enumerate(comments, 1):
                 st.write(f"{i}. {comment}")
 
-            # --- Get the current date and time ---
+            # --- Current Date & Time ---
             current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            # --- Prepare DataFrames and Files ---
+            # --- Save Outputs ---
             video_info = {
                 "Title": title,
                 "Channel": channel,
@@ -213,12 +211,12 @@ if st.button("Extract Info"):
             df_comments = pd.DataFrame(comments, columns=["Comment"])
             combined_df = pd.concat([df_info, df_comments], axis=1)
 
-            # --- Download as CSV ---
+            # --- CSV ---
             st.subheader("💾 Download Files")
             csv_data = combined_df.to_csv(index=False)
             st.download_button("📊 Download CSV", csv_data, file_name="video_info_and_comments.csv")
 
-            # --- Download as JSON ---
+            # --- JSON ---
             full_data = {
                 "video_info": video_info,
                 "comments": comments
@@ -226,7 +224,7 @@ if st.button("Extract Info"):
             json_data = json.dumps(full_data, indent=2)
             st.download_button("🗃️ Download JSON", json_data, file_name="video_info_and_comments.json")
 
-            # --- Download as TXT ---
+            # --- TXT ---
             txt_output = f"Title: {title}\nChannel: {channel}\nSubscribers: {subs}\nViews: {views}\nLikes: {likes}\nDescription:\n{description}\n\nComments:\n"
             for i, comment in enumerate(comments, 1):
                 txt_output += f"{i}. {comment}\n"
